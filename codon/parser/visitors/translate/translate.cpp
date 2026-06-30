@@ -2,6 +2,7 @@
 
 #include "translate.h"
 
+#include <cstddef>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -345,15 +346,92 @@ void TranslateVisitor::visit(CallExpr *expr) {
     if (i + 1 == expr->size() && isVariadic) {
       auto call = cast<CallExpr>(a.value);
       seqassert(call, "expected *args tuple: '{}'", call->toString(0));
+      // might need to add the lvalue, rvalue stuff here to
       for (auto &arg : *call)
         items.emplace_back(transform(arg.value));
     } else {
-      items.emplace_back(transform(a.value));
+      auto *arg_ast = a.value;
+
+      bool is_lvalue = false;
+      if(cast<IdExpr>(arg_ast) || cast<DotExpr>(arg_ast) || cast<IndexExpr>(arg_ast) || cast<StringExpr>(arg_ast)){
+        is_lvalue = true;
+      }
+
+      // items.emplace_back(transform(a.value));
+      ir::Value *arg_val = transform(arg_ast);
+      items.emplace_back(arg_val);
+
+      if(!is_lvalue){
+        
+        auto* arg_type = arg_val->getType();
+        // filter for strings or tuples
+        // TODO: maybe look at adding list 
+        // but list may not be used in generating
+        // intermediate values
+        if(arg_type && arg_type->is(ctx->getModule()->getStringType())) {
+
+          //get byte pointer type (void *)
+          ir::Type *byte_ptr_type = ctx->getModule()->getPointerType();
+
+          // Extract the heap pointer directly from the string struct
+          ir::Instr *heap_ptr = ctx->getModule()->Nr<ir::ExtractInstr>(arg_val, "_ptr");
+          // heap_ptr->setType(byte_ptr_type);
+          heap_ptr->setSrcInfo(expr->getSrcInfo());
+
+
+          auto *gc_free_func = ctx->getModule()->getOrRealizeFunc(
+            "free", 
+            {byte_ptr_type},
+            {},
+            "std.internal.gc"
+          );
+          if (gc_free_func) {
+            std::cout << "gc free function exists!" << std::endl;
+          }else {
+            std::cout << "gc free function is null!" << std::endl;
+          }
+          
+          // Build the free() call
+          ir::Instr *cleanup = ctx->getModule()->Nr<ir::CallInstr>(
+            (ir::Value *)gc_free_func, 
+            std::vector<ir::Value*>{heap_ptr}
+          );
+          cleanup->setSrcInfo(expr->getSrcInfo());
+          
+          ctx->pendingFrees.push_back(heap_ptr);
+          ctx->pendingFrees.push_back(cleanup);
+          
+        }
+      }
     }
     i++;
   }
   result = make<ir::CallInstr>(expr, callee, std::move(items));
 }
+// DEBUG FOR LLDB
+// =============================
+extern "C" void debug_dump_keys(codon::ast::TranslateContext *ctx) {
+    for (const auto& [key, val] : ctx->cache->classes) {
+        printf("%s\n", key.c_str());
+    }
+}
+
+extern "C" __attribute__((used)) void* debug_get_class(codon::ast::TranslateContext *ctx, const char* name) {
+    auto it = ctx->cache->classes.find(name);
+    if (it != ctx->cache->classes.end()) {
+        // Cast to void* to safely cross the C ABI boundary
+        return (void*)&(it->second); 
+    }
+    return nullptr;
+}
+
+extern "C" __attribute__((used)) void* debug_make_extract(codon::ast::TranslateContext *ctx, codon::ir::Value *val) {
+    // We let the pre-compiled C++ handle the template instantiation
+    codon::ir::Instr* heap_ptr = ctx->getModule()->Nr<codon::ir::ExtractInstr>(val, "ptr");
+    return (void*)heap_ptr;
+}
+
+// =============================
 
 void TranslateVisitor::visit(DotExpr *expr) {
   if (expr->getMember() == "__atomic__" || expr->getMember() == "__elemsize__" ||
@@ -484,6 +562,15 @@ void TranslateVisitor::visit(ExprStmt *stmt) {
     ctx->getBase()->setGenerator();
   } else {
     result = transform(stmt->getExpr());
+    if(result) ctx->getSeries()->push_back(result);
+
+    for(auto *cleanup : ctx->pendingFrees){
+      ctx->getSeries()->push_back(cleanup);
+    }
+
+    ctx->pendingFrees.clear();
+
+    result = nullptr;
   }
 }
 

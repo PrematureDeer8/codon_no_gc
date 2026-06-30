@@ -49,6 +49,8 @@ struct TranslateContext : public Context<TranslateItem> {
   std::vector<codon::ir::SeriesFlow *> series;
   /// Stack of sequence items for attribute initialization.
   std::vector<std::vector<std::pair<int, ir::Value *>>> seqItems;
+  // intermediate memory allocating instructions that need freeing
+  std::vector<ir::Instr*> pendingFrees;
 
 public:
   TranslateContext(Cache *cache);

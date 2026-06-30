@@ -75,7 +75,8 @@ Compiler::parse(bool isCode, const std::string &file, const std::string &code,
     LOG_TIME("[T] parse = {:.1f}", totalPeg);
     LOG_TIME("[T] typecheck = {:.1f}", t2.elapsed() - totalPeg);
 
-    if (codon::getLogger().flags & codon::Logger::FLAG_USER) {
+    // if (codon::getLogger().flags & codon::Logger::FLAG_USER) {
+    if(true){
       auto fo = fopen("_dump_typecheck.sexp", "w");
       fmt::print(fo, "{}\n", typechecked->toString(0));
       for (auto &f : cache->functions)
@@ -97,7 +98,8 @@ Compiler::parse(bool isCode, const std::string &file, const std::string &code,
     return llvm::make_error<error::ParserErrorInfo>(exc.getErrors());
   }
   module->setSrcInfo({abspath, 0, 0, 0});
-  if (codon::getLogger().flags & codon::Logger::FLAG_USER) {
+  // if (codon::getLogger().flags & codon::Logger::FLAG_USER) {
+  if(true){
     auto fo = fopen("_dump_ir.sexp", "w");
     fmt::print(fo, "{}\n", *module);
     fclose(fo);
