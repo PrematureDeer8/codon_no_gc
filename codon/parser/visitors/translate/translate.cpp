@@ -8,6 +8,10 @@
 #include <string>
 #include <vector>
 
+#include "codon/cir/util/irtools.h"
+#include "codon/cir/func.h"
+#include "codon/cir/instr.h"
+#include "codon/cir/module.h"
 #include "codon/cir/transform/parallel/schedule.h"
 #include "codon/cir/util/cloning.h"
 #include "codon/compiler/compiler.h"
@@ -361,46 +365,51 @@ void TranslateVisitor::visit(CallExpr *expr) {
       ir::Value *arg_val = transform(arg_ast);
       items.emplace_back(arg_val);
 
-      if(!is_lvalue){
-        
-        auto* arg_type = arg_val->getType();
-        // filter for strings or tuples
-        // TODO: maybe look at adding list 
-        // but list may not be used in generating
-        // intermediate values
-        if(arg_type && arg_type->is(ctx->getModule()->getStringType())) {
+      std::string file_path = expr->getSrcInfo().file;
 
-          //get byte pointer type (void *)
-          ir::Type *byte_ptr_type = ctx->getModule()->getPointerType();
+      if(file_path.find("stdlib") == std::string::npos){
 
-          // Extract the heap pointer directly from the string struct
-          ir::Instr *heap_ptr = ctx->getModule()->Nr<ir::ExtractInstr>(arg_val, "_ptr");
-          // heap_ptr->setType(byte_ptr_type);
-          heap_ptr->setSrcInfo(expr->getSrcInfo());
+        if(!is_lvalue){
+          
+          auto* arg_type = arg_val->getType();
+          // filter for strings
+          // TODO: maybe look at adding tuples 
+          // but list may not be used in generating
+          // intermediate values
+          if(arg_type && arg_type->is(ctx->getModule()->getStringType())) {
 
+            //get byte pointer type (void *)
+            ir::Type *byte_ptr_type = ctx->getModule()->getPointerType();
 
-          auto *gc_free_func = ctx->getModule()->getOrRealizeFunc(
-            "free", 
-            {byte_ptr_type},
-            {},
-            "std.internal.gc"
-          );
-          if (gc_free_func) {
-            std::cout << "gc free function exists!" << std::endl;
-          }else {
-            std::cout << "gc free function is null!" << std::endl;
+            // Extract the heap pointer directly from the string struct
+            auto *heap_ptr = ctx->getModule()->Nr<ir::ExtractInstr>(ctx->getModule()->Nr<ir::VarValue>(arg_val), "_ptr");
+
+            // heap_ptr->setType(byte_ptr_type);
+            heap_ptr->setSrcInfo(expr->getSrcInfo());
+            // heap_ptr->set
+
+            //returns Func *
+            auto *gc_free_func = ctx->getModule()->getOrRealizeFunc(
+              "free", 
+              {byte_ptr_type},
+              {},
+              "std.internal.gc"
+            );
+            if (gc_free_func) {
+              std::cout << "gc free function exists!" << std::endl;
+            }else {
+              std::cout << "gc free function is null!" << std::endl;
+            }
+
+            // Build the free() call
+            ir::CallInstr* cleanup = ir::util::call(gc_free_func, {heap_ptr});
+
+            cleanup->setSrcInfo(expr->getSrcInfo());
+            
+            // ctx->pendingFrees.push_back(heap_ptr);
+            ctx->pendingFrees.push_back(cleanup);
+            
           }
-          
-          // Build the free() call
-          ir::Instr *cleanup = ctx->getModule()->Nr<ir::CallInstr>(
-            (ir::Value *)gc_free_func, 
-            std::vector<ir::Value*>{heap_ptr}
-          );
-          cleanup->setSrcInfo(expr->getSrcInfo());
-          
-          ctx->pendingFrees.push_back(heap_ptr);
-          ctx->pendingFrees.push_back(cleanup);
-          
         }
       }
     }
