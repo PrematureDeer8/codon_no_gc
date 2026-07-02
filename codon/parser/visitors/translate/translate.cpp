@@ -362,6 +362,7 @@ void TranslateVisitor::visit(CallExpr *expr) {
       }
 
       // items.emplace_back(transform(a.value));
+      // returns ir::Value
       ir::Value *arg_val = transform(arg_ast);
       items.emplace_back(arg_val);
 
@@ -369,8 +370,10 @@ void TranslateVisitor::visit(CallExpr *expr) {
 
       if(file_path.find("stdlib") == std::string::npos){
 
-        if(!is_lvalue){
+        auto *call_instr = cast<ir::CallInstr>(arg_val);
+        if(!is_lvalue && call_instr){
           
+          // return type
           auto* arg_type = arg_val->getType();
           // filter for strings
           // TODO: maybe look at adding tuples 
@@ -379,10 +382,23 @@ void TranslateVisitor::visit(CallExpr *expr) {
           if(arg_type && arg_type->is(ctx->getModule()->getStringType())) {
 
             //get byte pointer type (void *)
-            ir::Type *byte_ptr_type = ctx->getModule()->getPointerType();
+            ir::Type *byte_ptr_type = ctx->getModule()->getPointerType();            
+            
+            // 2. Grab the current execution block and parent function
+            ir::SeriesFlow *current_block = ctx->getSeries();
+            ir::BodiedFunc *parent_func = cast<ir::BodiedFunc>(ctx->getBase()); 
+            
+            // 3. THE CONVERSION (Materialization)
+            // We pass the call_instr directly into makeVar. 
+            // This creates a new hidden stack variable and assigns the call's result to it.
+            ir::Var *temp_var = ir::util::makeVar(call_instr, current_block, parent_func, false);
+            
+            // 4. Create your VarValue!
+            // Now that the call is safely anchored to a 'Var', you can generate a VarValue for it.
+            ir::VarValue *my_var_val = ctx->getModule()->Nr<ir::VarValue>(temp_var);
 
             // Extract the heap pointer directly from the string struct
-            auto *heap_ptr = ctx->getModule()->Nr<ir::ExtractInstr>(ctx->getModule()->Nr<ir::VarValue>(arg_val), "_ptr");
+            auto *heap_ptr = ctx->getModule()->Nr<ir::ExtractInstr>(my_var_val, "_ptr");
 
             // heap_ptr->setType(byte_ptr_type);
             heap_ptr->setSrcInfo(expr->getSrcInfo());
