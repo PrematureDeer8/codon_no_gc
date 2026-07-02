@@ -364,7 +364,7 @@ void TranslateVisitor::visit(CallExpr *expr) {
       // items.emplace_back(transform(a.value));
       // returns ir::Value
       ir::Value *arg_val = transform(arg_ast);
-      items.emplace_back(arg_val);
+      // items.emplace_back(arg_val);
 
       std::string file_path = expr->getSrcInfo().file;
 
@@ -396,6 +396,7 @@ void TranslateVisitor::visit(CallExpr *expr) {
             // 4. Create your VarValue!
             // Now that the call is safely anchored to a 'Var', you can generate a VarValue for it.
             ir::VarValue *my_var_val = ctx->getModule()->Nr<ir::VarValue>(temp_var);
+            arg_val = my_var_val;
 
             // Extract the heap pointer directly from the string struct
             auto *heap_ptr = ctx->getModule()->Nr<ir::ExtractInstr>(my_var_val, "_ptr");
@@ -428,6 +429,7 @@ void TranslateVisitor::visit(CallExpr *expr) {
           }
         }
       }
+      items.emplace_back(arg_val);
     }
     i++;
   }
