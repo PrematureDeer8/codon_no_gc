@@ -179,13 +179,19 @@ else()
   set(COMPILER_RT_DEFAULT "${CMAKE_BINARY_DIR}/libclang_rt.builtins.default.a")
   set(COMPILER_RT_DEFAULT_VIS_SYMBOLS
     __truncdfhf2
+    __truncdfbf2
     __truncdfsf2
+    __truncsfbf2
     __truncsfhf2
     __trunctfdf2
+    __trunctfbf2
     __trunctfhf2
     __trunctfsf2
+    __truncxfbf2
     __trunctfxf2
+    __trunchfbf2
     __truncxfhf2
+    __extendbfsf2
     __extendsfdf2
     __extendhfsf2
     __extenddftf2
@@ -552,6 +558,14 @@ add_dependencies(libs codonrt codonc)
 # Codon command-line tool
 add_executable(codon codon/app/main.cpp)
 target_link_libraries(codon PUBLIC fmt codonc codon_jupyter Threads::Threads)
+if(ASAN)
+  target_compile_options(
+    codon PRIVATE "-fno-omit-frame-pointer" "-fsanitize=address"
+                  "-fsanitize-recover=address")
+  target_link_libraries(
+    codon PRIVATE "-fno-omit-frame-pointer" "-fsanitize=address"
+                  "-fsanitize-recover=address")
+endif()
 
 # Codon test Download and unpack googletest at configure time
 include(FetchContent)
@@ -582,7 +596,15 @@ set(CODON_TEST_CPPFILES
     test/types.cpp)
 add_executable(codon_test ${CODON_TEST_CPPFILES})
 target_include_directories(codon_test PRIVATE test/cir "${gc_SOURCE_DIR}/include")
-target_link_libraries(codon_test fmt codonc codonrt gtest_main)
+target_link_libraries(codon_test PRIVATE fmt codonc codonrt gtest_main)
+if(ASAN)
+  target_compile_options(
+    codon_test PRIVATE "-fno-omit-frame-pointer" "-fsanitize=address"
+                       "-fsanitize-recover=address")
+  target_link_libraries(
+    codon_test PRIVATE "-fno-omit-frame-pointer" "-fsanitize=address"
+                       "-fsanitize-recover=address")
+endif()
 target_compile_definitions(codon_test
                            PRIVATE TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
 
