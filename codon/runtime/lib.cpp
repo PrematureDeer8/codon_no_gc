@@ -33,9 +33,9 @@
 /*
  * General
  */
-
-#define USE_STANDARD_MALLOC 1
-
+#ifndef USE_STANDARD_MALLOC
+#define USE_STANDARD_MALLOC 0
+#endif
 // OpenMP patch with GC callbacks
 typedef int (*gc_setup_callback)(GC_stack_base *);
 typedef void (*gc_roots_callback)(void *, void *);
