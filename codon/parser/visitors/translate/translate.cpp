@@ -354,80 +354,9 @@ void TranslateVisitor::visit(CallExpr *expr) {
         items.emplace_back(transform(arg.value));
     } else {
       auto *arg_ast = a.value;
-
-      bool is_lvalue = false;
-      if(cast<IdExpr>(arg_ast) || cast<DotExpr>(arg_ast) || cast<IndexExpr>(arg_ast) || cast<StringExpr>(arg_ast)){
-        is_lvalue = true;
-      }
-
-      // items.emplace_back(transform(a.value));
-      // returns ir::Value
       ir::Value *arg_val = transform(arg_ast);
-      // items.emplace_back(arg_val);
-
-      std::string file_path = expr->getSrcInfo().file;
-
-      if(file_path.find("stdlib") == std::string::npos){
-
-        auto *call_instr = cast<ir::CallInstr>(arg_val);
-        if(!is_lvalue && call_instr){
-          
-          // return type
-          auto* arg_type = arg_val->getType();
-          // filter for strings
-          // TODO: maybe look at adding tuples 
-          // but list may not be used in generating
-          // intermediate values
-          if(arg_type && arg_type->is(ctx->getModule()->getStringType())) {
-
-            //get byte pointer type (void *)
-            ir::Type *byte_ptr_type = ctx->getModule()->getPointerType();            
-            
-            // 2. Grab the current execution block and parent function
-            ir::SeriesFlow *current_block = ctx->getSeries();
-            ir::BodiedFunc *parent_func = cast<ir::BodiedFunc>(ctx->getBase()); 
-            
-            // 3. THE CONVERSION (Materialization)
-            // We pass the call_instr directly into makeVar. 
-            // This creates a new hidden stack variable and assigns the call's result to it.
-            ir::Var *temp_var = ir::util::makeVar(call_instr, current_block, parent_func, false);
-            
-            // 4. Create your VarValue!
-            // Now that the call is safely anchored to a 'Var', you can generate a VarValue for it.
-            ir::VarValue *my_var_val = ctx->getModule()->Nr<ir::VarValue>(temp_var);
-            arg_val = my_var_val;
-
-            // Extract the heap pointer directly from the string struct
-            auto *heap_ptr = ctx->getModule()->Nr<ir::ExtractInstr>(my_var_val, "_ptr");
-
-            // heap_ptr->setType(byte_ptr_type);
-            heap_ptr->setSrcInfo(expr->getSrcInfo());
-            // heap_ptr->set
-
-            //returns Func *
-            auto *gc_free_func = ctx->getModule()->getOrRealizeFunc(
-              "free", 
-              {byte_ptr_type},
-              {},
-              "std.internal.gc"
-            );
-            if (gc_free_func) {
-              std::cout << "gc free function exists!" << std::endl;
-            }else {
-              std::cout << "gc free function is null!" << std::endl;
-            }
-
-            // Build the free() call
-            ir::CallInstr* cleanup = ir::util::call(gc_free_func, {heap_ptr});
-
-            cleanup->setSrcInfo(expr->getSrcInfo());
-            
-            // ctx->pendingFrees.push_back(heap_ptr);
-            ctx->pendingFrees.push_back(cleanup);
-            
-          }
-        }
-      }
+      // clean up intermediate values
+      TranslateVisitor::insertGCFree(arg_ast, arg_val, expr);
       items.emplace_back(arg_val);
     }
     i++;
@@ -814,6 +743,78 @@ void TranslateVisitor::visit(ClassStmt *stmt) {
 }
 
 /************************************************************************************/
+
+void TranslateVisitor::insertGCFree(Expr* arg_ast, ir::Value* arg_val, CallExpr* expr){
+  bool is_lvalue = false;
+  if(cast<IdExpr>(arg_ast) || cast<DotExpr>(arg_ast) || cast<IndexExpr>(arg_ast) || cast<StringExpr>(arg_ast)){
+    is_lvalue = true;
+  }
+
+  std::string file_path = expr->getSrcInfo().file;
+
+  // don't apply GCfree to stdlib modules
+  if(file_path.find("stdlib") == std::string::npos){
+
+    auto *call_instr = cast<ir::CallInstr>(arg_val);
+    if(!is_lvalue && call_instr){
+      
+      // return type
+      auto* arg_type = arg_val->getType();
+      // filter for strings
+      // TODO: maybe look at adding tuples 
+      // but list may not be used in generating
+      // intermediate values
+      if(arg_type && arg_type->is(ctx->getModule()->getStringType())) {
+
+        //get byte pointer type (void *)
+        ir::Type *byte_ptr_type = ctx->getModule()->getPointerType();            
+        
+        // 2. Grab the current execution block and parent function
+        ir::SeriesFlow *current_block = ctx->getSeries();
+        ir::BodiedFunc *parent_func = cast<ir::BodiedFunc>(ctx->getBase()); 
+        
+        // 3. THE CONVERSION (Materialization)
+        // We pass the call_instr directly into makeVar. 
+        // This creates a new hidden stack variable and assigns the call's result to it.
+        ir::Var *temp_var = ir::util::makeVar(call_instr, current_block, parent_func, false);
+        
+        // 4. Create your VarValue!
+        // Now that the call is safely anchored to a 'Var', you can generate a VarValue for it.
+        ir::VarValue *my_var_val = ctx->getModule()->Nr<ir::VarValue>(temp_var);
+        arg_val = my_var_val;
+
+        // Extract the heap pointer directly from the string struct
+        auto *heap_ptr = ctx->getModule()->Nr<ir::ExtractInstr>(my_var_val, "_ptr");
+
+        // heap_ptr->setType(byte_ptr_type);
+        heap_ptr->setSrcInfo(expr->getSrcInfo());
+        // heap_ptr->set
+
+        //returns Func *
+        auto *gc_free_func = ctx->getModule()->getOrRealizeFunc(
+          "free", 
+          {byte_ptr_type},
+          {},
+          "std.internal.gc"
+        );
+        if (gc_free_func) {
+          std::cout << "gc free function exists!" << std::endl;
+        }else {
+          std::cout << "gc free function is null!" << std::endl;
+        }
+
+        // Build the free() call
+        ir::CallInstr* cleanup = ir::util::call(gc_free_func, {heap_ptr});
+
+        cleanup->setSrcInfo(expr->getSrcInfo());
+        
+        // ctx->pendingFrees.push_back(heap_ptr);
+        ctx->pendingFrees.push_back(cleanup);
+        
+      }
+    }
+  }
+}
 
 codon::ir::Type *TranslateVisitor::getType(types::Type *t) const {
   seqassert(t && t->getClass(), "not a class: {}", t ? t->debugString(2) : "-");

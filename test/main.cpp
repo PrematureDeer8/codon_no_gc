@@ -599,6 +599,22 @@ INSTANTIATE_TEST_SUITE_P(
     ),
     getTestNameFromParam);
 
+INSTANTIATE_TEST_SUITE_P(
+    NoGCTests, SeqTest,
+    testing::Combine(
+        testing::Values(
+            "no_gc/fmt_string_rvalue_test.codon"
+        ),
+        testing::Values(true, false), 
+        testing::Values(""),          
+        testing::Values(""),          
+        testing::Values(0),           
+        testing::Values(false),      
+        testing::Values(true),     
+        testing::Values(true)
+    ),
+    getTestNameFromParam);
+
 // clang-format on
 
 int main(int argc, char *argv[]) {
