@@ -744,7 +744,7 @@ void TranslateVisitor::visit(ClassStmt *stmt) {
 
 /************************************************************************************/
 
-void TranslateVisitor::insertGCFree(Expr* arg_ast, ir::Value* arg_val, CallExpr* expr){
+void TranslateVisitor::insertGCFree(Expr* arg_ast, ir::Value*& arg_val, CallExpr* expr){
   bool is_lvalue = false;
   if(cast<IdExpr>(arg_ast) || cast<DotExpr>(arg_ast) || cast<IndexExpr>(arg_ast) || cast<StringExpr>(arg_ast)){
     is_lvalue = true;

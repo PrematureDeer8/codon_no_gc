@@ -73,7 +73,7 @@ private:
   void transformLLVMFunction(types::FuncType *type, FunctionStmt *ast,
                              ir::Func *func) const;
 
-  void insertGCFree(Expr* arg_ast, ir::Value* arg_val, CallExpr* expr);
+  void insertGCFree(Expr* arg_ast, ir::Value*& arg_val, CallExpr* expr);
 
   template <typename ValueType, typename... Args> ValueType *make(Args &&...args) {
     auto *ret = ctx->getModule()->N<ValueType>(std::forward<Args>(args)...);
