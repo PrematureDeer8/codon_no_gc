@@ -1,0 +1,20 @@
+# Test for leaks when garbage collector is turned off
+from python import pathlib
+from python import sys
+
+sys.path.append(str(pathlib.Path.cwd() / "test" / "no_gc"))
+
+from python import mem_tester as py_test
+
+@test
+def fmt_string_test1():
+    test_program : str = py_test.fstring_test1;
+    codon_exe_path = pathlib.Path.home() / "codon_no_gc" / "install" / "bin" / "codon";
+    tester = py_test.MemoryTester(test_program, codon_exe_path=codon_exe_path);
+    tester.build();
+    mem_debug_process = tester.analyze_mem_leaks();
+    tester.clean();
+
+    assert mem_debug_process.returncode == 0, mem_debug_process.stdout if mem_debug_process.returncode == 1 else mem_debug_process.stderr
+
+fmt_string_test1();

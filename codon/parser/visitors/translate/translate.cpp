@@ -362,6 +362,26 @@ void TranslateVisitor::visit(CallExpr *expr) {
     i++;
   }
   result = make<ir::CallInstr>(expr, callee, std::move(items));
+
+  // change str.cat from rvalue to lvalue
+  if(ei && startswith(ei->getValue(), 
+                      std::string("str.cat"))
+                    && expr->getSrcInfo().file.find("stdlib") == std::string::npos){
+    auto *call_instr = result;
+    ir::Var *temp_var = ir::util::makeVar(call_instr, ctx->getSeries(), cast<ir::BodiedFunc>(ctx->getBase()), false);
+    ir::VarValue *my_var_val = ctx->getModule()->Nr<ir::VarValue>(temp_var);
+
+    my_var_val->setSrcInfo(expr->getSrcInfo());
+
+    result = my_var_val;
+
+    // insert GC Frees
+    for(auto *cleanup : ctx->pendingFrees){
+      ctx->getSeries()->push_back(cleanup);
+    }
+
+    ctx->pendingFrees.clear();
+  }
 }
 // DEBUG FOR LLDB
 // =============================
@@ -519,11 +539,6 @@ void TranslateVisitor::visit(ExprStmt *stmt) {
     result = transform(stmt->getExpr());
     if(result) ctx->getSeries()->push_back(result);
 
-    for(auto *cleanup : ctx->pendingFrees){
-      ctx->getSeries()->push_back(cleanup);
-    }
-
-    ctx->pendingFrees.clear();
 
     result = nullptr;
   }
@@ -745,6 +760,8 @@ void TranslateVisitor::visit(ClassStmt *stmt) {
 /************************************************************************************/
 
 void TranslateVisitor::insertGCFree(Expr* arg_ast, ir::Value*& arg_val, CallExpr* expr){
+  // TODO: handle str(0)
+  // TODO: handle escaping values (return statements)
   bool is_lvalue = false;
   if(cast<IdExpr>(arg_ast) || cast<DotExpr>(arg_ast) || cast<IndexExpr>(arg_ast) || cast<StringExpr>(arg_ast)){
     is_lvalue = true;
@@ -766,51 +783,73 @@ void TranslateVisitor::insertGCFree(Expr* arg_ast, ir::Value*& arg_val, CallExpr
       // intermediate values
       if(arg_type && arg_type->is(ctx->getModule()->getStringType())) {
 
-        //get byte pointer type (void *)
-        ir::Type *byte_ptr_type = ctx->getModule()->getPointerType();            
-        
-        // 2. Grab the current execution block and parent function
-        ir::SeriesFlow *current_block = ctx->getSeries();
-        ir::BodiedFunc *parent_func = cast<ir::BodiedFunc>(ctx->getBase()); 
-        
-        // 3. THE CONVERSION (Materialization)
-        // We pass the call_instr directly into makeVar. 
-        // This creates a new hidden stack variable and assigns the call's result to it.
-        ir::Var *temp_var = ir::util::makeVar(call_instr, current_block, parent_func, false);
-        
-        // 4. Create your VarValue!
-        // Now that the call is safely anchored to a 'Var', you can generate a VarValue for it.
-        ir::VarValue *my_var_val = ctx->getModule()->Nr<ir::VarValue>(temp_var);
-        arg_val = my_var_val;
+        auto* callee_func = ir::cast<ir::BodiedFunc>(ir::util::getFunc(call_instr->getCallee()));
 
-        // Extract the heap pointer directly from the string struct
-        auto *heap_ptr = ctx->getModule()->Nr<ir::ExtractInstr>(my_var_val, "_ptr");
+        if(callee_func){
+          std::string func_name = callee_func->getUnmangledName();
 
-        // heap_ptr->setType(byte_ptr_type);
-        heap_ptr->setSrcInfo(expr->getSrcInfo());
-        // heap_ptr->set
+          // std::cerr << "Callee func name: "<< func_name << std::endl;
+          std::vector<ir::Value*> args(call_instr->begin(), call_instr->end());
+          
+          bool is_known_allocator = 
+            (func_name.find("__new__") != std::string::npos);
 
-        //returns Func *
-        auto *gc_free_func = ctx->getModule()->getOrRealizeFunc(
-          "free", 
-          {byte_ptr_type},
-          {},
-          "std.internal.gc"
-        );
-        if (gc_free_func) {
-          std::cout << "gc free function exists!" << std::endl;
-        }else {
-          std::cout << "gc free function is null!" << std::endl;
+          if(!args.empty()){
+            ir::Value* first_arg = args[0];
+
+            auto* arg_type = first_arg->getType();
+            auto* static_str = ir::cast<ir::StringConst>(first_arg);
+            is_known_allocator = is_known_allocator && !static_str;
+          }
+          
+          if(!is_known_allocator){
+            return;
+          }
+          
+
+          //get byte pointer type (void *)
+          ir::Type *byte_ptr_type = ctx->getModule()->getPointerType();            
+          
+          // 2. Grab the current execution block and parent function
+          ir::SeriesFlow *current_block = ctx->getSeries();
+          ir::BodiedFunc *parent_func = cast<ir::BodiedFunc>(ctx->getBase()); 
+          
+          // 3. THE CONVERSION (Materialization)
+          // We pass the call_instr directly into makeVar. 
+          // This creates a new hidden stack variable and assigns the call's result to it.
+          ir::Var *temp_var = ir::util::makeVar(call_instr, current_block, parent_func, false);
+          
+          // 4. Create your VarValue!
+          // Now that the call is safely anchored to a 'Var', you can generate a VarValue for it.
+          ir::VarValue *my_var_val = ctx->getModule()->Nr<ir::VarValue>(temp_var);
+          arg_val = my_var_val;
+
+          // Extract the heap pointer directly from the string struct
+          auto *heap_ptr = ctx->getModule()->Nr<ir::ExtractInstr>(my_var_val, "_ptr");
+
+          if(heap_ptr){
+            heap_ptr->setSrcInfo(expr->getSrcInfo());
+
+            //returns Func *
+            auto *gc_free_func = ctx->getModule()->getOrRealizeFunc(
+              "free", 
+              {byte_ptr_type},
+              {},
+              "std.internal.gc"
+            );
+            
+            if(gc_free_func){
+              // std::cout << "gc free function exists!" << std::endl;
+              // Build the free() call
+              ir::CallInstr* cleanup = ir::util::call(gc_free_func, {heap_ptr});
+
+              cleanup->setSrcInfo(expr->getSrcInfo());
+              
+              // ctx->pendingFrees.push_back(heap_ptr);
+              ctx->pendingFrees.push_back(cleanup);
+            }
+          }
         }
-
-        // Build the free() call
-        ir::CallInstr* cleanup = ir::util::call(gc_free_func, {heap_ptr});
-
-        cleanup->setSrcInfo(expr->getSrcInfo());
-        
-        // ctx->pendingFrees.push_back(heap_ptr);
-        ctx->pendingFrees.push_back(cleanup);
-        
       }
     }
   }
