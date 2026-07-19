@@ -786,23 +786,26 @@ void TranslateVisitor::insertGCFree(Expr* arg_ast, ir::Value*& arg_val, CallExpr
         auto* callee_func = ir::cast<ir::BodiedFunc>(ir::util::getFunc(call_instr->getCallee()));
 
         if(callee_func){
-          std::string func_name = callee_func->getUnmangledName();
+          std::string func_name = callee_func->getName();
 
           // std::cerr << "Callee func name: "<< func_name << std::endl;
           std::vector<ir::Value*> args(call_instr->begin(), call_instr->end());
           
-          bool is_known_allocator = 
-            (func_name.find("__new__") != std::string::npos);
+          bool is_known_allocator = startswith(func_name, "str.__new__");
 
+          bool static_str, static_bool;
           if(!args.empty()){
             ir::Value* first_arg = args[0];
 
-            auto* arg_type = first_arg->getType();
-            auto* static_str = ir::cast<ir::StringConst>(first_arg);
-            is_known_allocator = is_known_allocator && !static_str;
+            // if the argument of the str.__new__ function is of type:
+            //    string, bool
+            // there will be no allocation done
+            // therefore no free is needed
+            static_str = first_arg->getType()->is(ctx->getModule()->getStringType());
+            static_bool = first_arg->getType()->is(ctx->getModule()->getBoolType());
           }
           
-          if(!is_known_allocator){
+          if(!is_known_allocator || static_bool || static_str){
             return;
           }
           
