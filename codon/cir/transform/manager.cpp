@@ -27,6 +27,7 @@
 #include "codon/cir/transform/pythonic/list.h"
 #include "codon/cir/transform/pythonic/str.h"
 #include "codon/util/common.h"
+#include "codon/cir/transform/insertion/gc_free.h"
 
 namespace codon {
 namespace ir {
@@ -155,6 +156,7 @@ void PassManager::registerStandardPasses() {
   if (options->pmempty) {
     /* do nothing */
   } else if (options->debug && !options->test) {
+    registerPass(std::make_unique<insertion::GCFree>());
     registerPass(std::make_unique<lowering::PipelineLowering>());
     registerPass(std::make_unique<lowering::ImperativeForFlowLowering>());
     registerPass(std::make_unique<lowering::AsyncForLowering>());

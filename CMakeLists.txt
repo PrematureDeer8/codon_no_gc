@@ -326,6 +326,7 @@ set(CODON_HPPFILES
   codon/cir/transform/pythonic/list.h
   codon/cir/transform/pythonic/str.h
   codon/cir/transform/rewrite.h
+  codon/cir/transform/insertion/gc_free.h
   codon/cir/type.h
   codon/cir/util/cloning.h
   codon/cir/util/context.h
@@ -434,6 +435,7 @@ set(CODON_CPPFILES
   codon/cir/transform/pythonic/io.cpp
   codon/cir/transform/pythonic/list.cpp
   codon/cir/transform/pythonic/str.cpp
+  codon/cir/transform/insertion/gc_free.cpp
   codon/cir/type.cpp
   codon/cir/util/cloning.cpp
   codon/cir/util/format.cpp
