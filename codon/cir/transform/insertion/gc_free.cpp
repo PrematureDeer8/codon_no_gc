@@ -1,6 +1,7 @@
 #include "gc_free.h"
 #include <iostream>
 
+// for debug purposes 
 extern "C" void dump_cir(codon::ir::Node* node){
     if(node){
         std::cout << *node << std::endl;
@@ -17,6 +18,39 @@ namespace insertion {
 void ReturnFinder::handle(ir::ReturnInstr *instr) {
     returns.push_back(instr);
 }
+
+void InsertGCFree::handle(ir::SeriesFlow* flow){
+    ir::SeriesFlow* previous_block = current_block;
+    current_block = flow;
+
+    ir::util::Operator::handle(flow);
+
+    current_block = previous_block;
+}
+
+void InsertGCFree::handle(ir::CallInstr *instr){
+
+    for(auto it = instr->begin(); it != instr->end(); it++){
+        ir::Value* arg = *it;
+        if(auto* nested_call = ir::cast<ir::CallInstr>(arg)){
+
+            if(auto *vv = ir::cast<ir::VarValue>(nested_call->getCallee())){
+                if(auto *func = ir::cast<ir::Func>(vv->getVar())){
+                    auto ret = allocates_memory.find(func);
+                    if(ret != allocates_memory.end() && allocates_memory[func]){
+                        ir::Var* temp_var = ir::util::makeVar(nested_call, current_block, current_func, true);
+                        ir::VarValue *var_val = M->Nr<ir::VarValue>(temp_var);
+
+                        // replace nested_call instr with temp variable
+                        *it = var_val;
+                    }
+                }
+            }
+        }
+    }
+    ir::util::Operator::handle(instr);
+}
+
 // instr->getValue() --> gets the arguments
 bool GCFree::tracesToSeqAlloc(ir::Value* val){
     return false;
@@ -52,6 +86,7 @@ bool GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*
         
         for(auto* ret : finder.returns){
             auto* val = ret->getValue();
+            // check for heap allocating call instructions
             if(auto* call_instr = ir::cast<ir::CallInstr>(val)){
                 if(auto* var_val = ir::cast<ir::VarValue>(call_instr->getCallee())){
                     if(auto* callee_func = ir::cast<ir::Func>(var_val->getVar())){
@@ -77,15 +112,26 @@ void GCFree::run(ir::Module *module){
     }
 
     // --- PHASE 2: Insert the Free Calls ---
-    // for (auto* func : *module) {
-    //     auto* bodied_func = ir::cast<ir::BodiedFunc>(func);
-    //     if (!bodied_func) continue;
+    for (auto* func : *module) {
+        auto* bodied_func = ir::cast<ir::BodiedFunc>(func);
+        if (!bodied_func) continue;
 
-    //     // TODO: Walk the 'bodied_func' instructions here.
-    //     // When you see a CallInstr, do a quick lookup: 
-    //     // if (allocates_memory[call_instr->getCallee()]) { ... }
-    //     // If true, track the variable and insert a free() at the end of its scope!
-    // }
+        // TODO: Walk the 'bodied_func' instructions here.
+        InsertGCFree inserter;
+        inserter.M = module;
+        inserter.current_func = bodied_func;
+        
+        // cast/create series flow
+        auto* series_flow = ir::cast<ir::SeriesFlow>(bodied_func->getBody());
+        if(!series_flow){
+            series_flow = module->Nr<ir::SeriesFlow>();
+            series_flow->push_back(bodied_func->getBody());
+        }
+        inserter.current_block = series_flow;
+        inserter.allocates_memory = allocates_memory; // TODO: Figure out how to pass by reference instead
+
+        bodied_func->getBody()->accept(inserter);
+    }
 }
 
 
