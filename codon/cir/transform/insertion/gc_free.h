@@ -31,7 +31,9 @@ struct InsertGCFree : public ir::util::Operator {
 
     void handle(ir::CallInstr *instr) override;
     void handle(ir::SeriesFlow *flow) override;
-
+    // void handle(ir::IfFlow *flow) override;
+    // void handle(ir::ForFlow *flow) override;
+    // void handle(ir::WhileFlow *flow) override;
 
 };
 

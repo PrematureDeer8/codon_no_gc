@@ -38,10 +38,24 @@ void InsertGCFree::handle(ir::CallInstr *instr){
                 if(auto *func = ir::cast<ir::Func>(vv->getVar())){
                     auto ret = allocates_memory.find(func);
                     if(ret != allocates_memory.end() && allocates_memory[func]){
-                        ir::Var* temp_var = ir::util::makeVar(nested_call, current_block, current_func, true);
-                        ir::VarValue *var_val = M->Nr<ir::VarValue>(temp_var);
+                        // ir::Var* temp_var = ir::util::makeVar(nested_call, current_block, current_func, true);
+                        bool global = current_func == nullptr;
+                        auto *v = M->Nr<ir::Var>(nested_call->getType(), global);
+                        //handle global
+                        // if(global){
+                        //     static int counter = 1;
+                        //     v->setName(".anon_global" + std::string(counter++));
+                        // }
+                        auto *assign_instr = M->Nr<ir::AssignInstr>(v, nested_call);
+                        ir::util::Operator::insertBefore(assign_instr);
 
-                        // replace nested_call instr with temp variable
+                        if(!global){
+                            current_func->push_back(v);
+                        }
+
+                        ir::VarValue *var_val = M->Nr<ir::VarValue>(v);
+
+                        // replace nested_call instr with variable value
                         *it = var_val;
                     }
                 }
