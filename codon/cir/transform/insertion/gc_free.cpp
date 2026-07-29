@@ -19,26 +19,14 @@ void ReturnFinder::handle(ir::ReturnInstr *instr) {
     returns.push_back(instr);
 }
 
-void InsertGCFree::handle(ir::SeriesFlow* flow){
-    ir::SeriesFlow* previous_block = current_block;
-    current_block = flow;
-
-    ir::util::Operator::handle(flow);
-
-    current_block = previous_block;
-}
-
-void InsertGCFree::handle(ir::CallInstr *instr){
-
+void AliasGenerator::nested_instr_handler(ir::CallInstr* instr){
     for(auto it = instr->begin(); it != instr->end(); it++){
         ir::Value* arg = *it;
-        if(auto* nested_call = ir::cast<ir::CallInstr>(arg)){
-
+        if(auto* nested_call = ir::cast<ir::CallInstr>(arg)){ 
             if(auto *vv = ir::cast<ir::VarValue>(nested_call->getCallee())){
                 if(auto *func = ir::cast<ir::Func>(vv->getVar())){
                     auto ret = allocates_memory.find(func);
                     if(ret != allocates_memory.end() && allocates_memory[func]){
-                        // ir::Var* temp_var = ir::util::makeVar(nested_call, current_block, current_func, true);
                         bool global = current_func == nullptr;
                         auto *v = M->Nr<ir::Var>(nested_call->getType(), global);
                         //handle global
@@ -46,15 +34,18 @@ void InsertGCFree::handle(ir::CallInstr *instr){
                         //     static int counter = 1;
                         //     v->setName(".anon_global" + std::string(counter++));
                         // }
+                        
+                        //this variable is on the heap!
                         auto *assign_instr = M->Nr<ir::AssignInstr>(v, nested_call);
                         ir::util::Operator::insertBefore(assign_instr);
+
+                        
 
                         if(!global){
                             current_func->push_back(v);
                         }
 
                         ir::VarValue *var_val = M->Nr<ir::VarValue>(v);
-
                         // replace nested_call instr with variable value
                         *it = var_val;
                     }
@@ -62,7 +53,82 @@ void InsertGCFree::handle(ir::CallInstr *instr){
             }
         }
     }
+}
+
+
+void AliasGenerator::handle(ir::ReturnInstr *instr){
+    auto* val = instr->getValue();
+    if(auto *nested_call = ir::cast<ir::CallInstr>(val)){
+        nested_instr_handler(nested_call);
+    }
     ir::util::Operator::handle(instr);
+
+}
+
+void AliasGenerator::handle(ir::CallInstr *instr){
+    if(AliasGenerator::depth() == 1){
+        if(auto *vv = ir::cast<ir::VarValue>(instr->getCallee())){
+            if(auto *func = ir::cast<ir::Func>(vv->getVar())){
+                auto ret = allocates_memory.find(func);
+                if(ret != allocates_memory.end() && allocates_memory[func]){
+                    bool global = current_func == nullptr;
+                    auto *v = M->Nr<ir::Var>(instr->getType(), global);
+                    generated_aliases.insert(v);
+
+                    //this variable is on the heap!
+                    auto *assign_instr = M->Nr<ir::AssignInstr>(v, instr);
+                    // instr->replaceAll(var_val);
+                    ir::util::Operator::insertBefore(assign_instr);
+
+
+                    if(!global){
+                        current_func->push_back(v);
+                    }
+                }
+            }
+        }    
+    }else{
+        nested_instr_handler(instr);
+    }
+    ir::util::Operator::handle(instr);
+    /*
+    for(auto it = instr->begin(); it != instr->end(); it++){
+        ir::Value* arg = *it;
+        if(auto* nested_call = ir::cast<ir::CallInstr>(arg)){ 
+            if(auto *vv = ir::cast<ir::VarValue>(nested_call->getCallee())){
+                if(auto *func = ir::cast<ir::Func>(vv->getVar())){
+                    auto ret = allocates_memory.find(func);
+                    if(ret != allocates_memory.end() && allocates_memory[func]){
+                        bool global = current_func == nullptr;
+                        auto *v = M->Nr<ir::Var>(nested_call->getType(), global);
+                        //handle global
+                        // if(global){
+                        //     static int counter = 1;
+                        //     v->setName(".anon_global" + std::string(counter++));
+                        // }
+                        
+                        //this variable is on the heap!
+                        auto *assign_instr = M->Nr<ir::AssignInstr>(v, nested_call);
+                        ir::util::Operator::insertBefore(assign_instr);
+
+                        
+
+                        if(!global){
+                            current_func->push_back(v);
+                        }
+
+                        ir::VarValue *var_val = M->Nr<ir::VarValue>(v);
+                        // replace nested_call instr with variable value
+                        *it = var_val;
+                    }
+                }
+            }
+        }
+    }
+    */
+    // create temp for current call instruction
+    
+
 }
 
 // instr->getValue() --> gets the arguments
@@ -96,6 +162,7 @@ bool GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*
     if(auto* bodied_func = ir::cast<ir::BodiedFunc>(func)){
         ReturnFinder finder;
         bodied_func->getBody()->accept(finder);
+        return_statements[bodied_func] = finder.returns;
 
         
         for(auto* ret : finder.returns){
@@ -112,7 +179,6 @@ bool GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*
 
         }
     }
-    // 4. Cache the result for O(1) lookups later
     return false;
 }
 void GCFree::run(ir::Module *module){
@@ -126,25 +192,41 @@ void GCFree::run(ir::Module *module){
     }
 
     // --- PHASE 2: Insert the Free Calls ---
-    for (auto* func : *module) {
-        auto* bodied_func = ir::cast<ir::BodiedFunc>(func);
+    for (const auto& [var, value] : allocates_memory) {
+        auto* bodied_func = ir::cast<ir::BodiedFunc>(var);
         if (!bodied_func) continue;
 
         // TODO: Walk the 'bodied_func' instructions here.
-        InsertGCFree inserter;
-        inserter.M = module;
-        inserter.current_func = bodied_func;
-        
-        // cast/create series flow
-        auto* series_flow = ir::cast<ir::SeriesFlow>(bodied_func->getBody());
-        if(!series_flow){
-            series_flow = module->Nr<ir::SeriesFlow>();
-            series_flow->push_back(bodied_func->getBody());
-        }
-        inserter.current_block = series_flow;
-        inserter.allocates_memory = allocates_memory; // TODO: Figure out how to pass by reference instead
+        // generate temporary variables for heap allocated structures
+        AliasGenerator generator;
+        generator.M = module;
+        generator.current_func = bodied_func;
+        generator.allocates_memory = allocates_memory; // TODO: Figure out how to pass by reference instead
 
-        bodied_func->getBody()->accept(inserter);
+        bodied_func->getBody()->accept(generator);
+
+
+        //assess if function is returning heap allocated structures
+        for(auto* ret_instr : return_statements[bodied_func]){
+            auto* val = ret_instr->getValue();
+            // nested_call function in the ret_instr
+            if(auto* call_instr = ir::cast<ir::CallInstr>(val)){
+                // recurse in the call_instr
+            }else if(auto* var = ir::cast<ir::Var>(val)){
+                // variables being returned, escaped the local scope
+                generator.generated_aliases.erase(var);
+            }
+        }
+
+        // insert GC Frees
+        for(ir::Var* var_to_free : generator.generated_aliases){
+            ir::Func* deconstructor = module->getOrRealizeMethod(var_to_free->getType(), "__del__", {var_to_free->getType()});
+            if(deconstructor){
+                if(auto *param = ir::cast<ir::Value>(var_to_free)){
+                    ir::CallInstr* gc_free_call = ir::util::call(deconstructor, {param});
+                }
+            }
+        }
     }
 }
 

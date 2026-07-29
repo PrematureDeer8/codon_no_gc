@@ -20,7 +20,7 @@ struct ReturnFinder : public ir::util::Operator {
     void handle(ir::ReturnInstr *instr) override;
 };
 
-struct InsertGCFree : public ir::util::Operator {
+struct AliasGenerator : public ir::util::Operator {
     ir::Module* M;
 
     ir::BodiedFunc* current_func = nullptr;
@@ -28,14 +28,18 @@ struct InsertGCFree : public ir::util::Operator {
 
     std::unordered_map<ir::SeriesFlow*, std::vector<ir::Var*>> vars_to_free_in_block;
     std::unordered_map<ir::Func*, bool> allocates_memory;
+    // generated_aliases are candidates for inserting GC frees
+    // these variables are deemed to be in a function's local scope (escape analysis)
+    std::unordered_set<ir::Var*> generated_aliases;
 
+    // void handle(ir::ReturnInstr *instr) override;
     void handle(ir::CallInstr *instr) override;
-    void handle(ir::SeriesFlow *flow) override;
-    // void handle(ir::IfFlow *flow) override;
-    // void handle(ir::ForFlow *flow) override;
-    // void handle(ir::WhileFlow *flow) override;
+    void nested_instr_handler(ir::CallInstr *instr);
+    void handle(ir::ReturnInstr *instr) override;
 
 };
+
+// struct
 
 // -----------------------------------------------------------------------------
 // 2. The Core GC Pass
@@ -44,6 +48,7 @@ class GCFree : public Pass {
 private:
     // The memoization cache: remembers if a function returns heap memory
     std::unordered_map<ir::Func*, bool> allocates_memory;
+    std::unordered_map<ir::BodiedFunc*, std::vector<ir::ReturnInstr*>> return_statements;
 
     // TODO: Implement your traceback logic here
     bool tracesToSeqAlloc(ir::Value* val);
