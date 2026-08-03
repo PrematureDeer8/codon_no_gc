@@ -2,6 +2,7 @@
 #include "codon/cir/cir.h"
 #include "codon/cir/util/visitor.h"
 #include "codon/cir/util/irtools.h"
+#include "codon/cir/util/matching.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -20,6 +21,13 @@ struct ReturnFinder : public ir::util::Operator {
     void handle(ir::ReturnInstr *instr) override;
 };
 
+struct VarFinder : public ir::util::Operator {
+    ir::Var* target_var = nullptr;
+    std::unordered_map<ir::SeriesFlow*, ir::AssignInstr*> sf_last_assign;
+
+    void handle(ir::AssignInstr *instr) override;
+};
+
 struct AliasGenerator : public ir::util::Operator {
     ir::Module* M;
 
@@ -30,7 +38,7 @@ struct AliasGenerator : public ir::util::Operator {
     std::unordered_map<ir::Func*, bool> allocates_memory;
     // generated_aliases are candidates for inserting GC frees
     // these variables are deemed to be in a function's local scope (escape analysis)
-    std::unordered_set<ir::Var*> generated_aliases;
+    std::unordered_map<ir::Var*, ir::SeriesFlow*> generated_aliases;
 
     // void handle(ir::ReturnInstr *instr) override;
     void handle(ir::CallInstr *instr) override;
@@ -55,6 +63,7 @@ private:
 
     // Recursive analyzer with cycle prevention
     bool checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*>& visited);
+    bool checkVarIsOnHeap(ir::BodiedFunc* func, ir::Var* var, std::unordered_set<ir::Func*>& visited);
 
     // insert GC free calls
     // void insertGCFree(ir::Value* val);

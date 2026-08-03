@@ -356,7 +356,7 @@ void TranslateVisitor::visit(CallExpr *expr) {
       auto *arg_ast = a.value;
       ir::Value *arg_val = transform(arg_ast);
       // clean up intermediate values
-      TranslateVisitor::insertGCFree(arg_ast, arg_val, expr);
+      // TranslateVisitor::insertGCFree(arg_ast, arg_val, expr);
       items.emplace_back(arg_val);
     }
     i++;
@@ -376,11 +376,11 @@ void TranslateVisitor::visit(CallExpr *expr) {
     result = my_var_val;
 
     // insert GC Frees
-    for(auto *cleanup : ctx->pendingFrees){
-      ctx->getSeries()->push_back(cleanup);
-    }
+    // for(auto *cleanup : ctx->pendingFrees){
+    //   ctx->getSeries()->push_back(cleanup);
+    // }
 
-    ctx->pendingFrees.clear();
+    // ctx->pendingFrees.clear();
   }
 }
 // DEBUG FOR LLDB

@@ -1,5 +1,6 @@
 #include "gc_free.h"
 #include <iostream>
+#include <unordered_set>
 
 // for debug purposes 
 extern "C" void dump_cir(codon::ir::Node* node){
@@ -29,6 +30,9 @@ void AliasGenerator::nested_instr_handler(ir::CallInstr* instr){
                     if(ret != allocates_memory.end() && allocates_memory[func]){
                         bool global = current_func == nullptr;
                         auto *v = M->Nr<ir::Var>(nested_call->getType(), global);
+                        // generated_aliases.insert(v);
+                        auto* lastSeriesFlow = findLast<ir::SeriesFlow>();
+                        generated_aliases[v] = lastSeriesFlow;
                         //handle global
                         // if(global){
                         //     static int counter = 1;
@@ -73,7 +77,8 @@ void AliasGenerator::handle(ir::CallInstr *instr){
                 if(ret != allocates_memory.end() && allocates_memory[func]){
                     bool global = current_func == nullptr;
                     auto *v = M->Nr<ir::Var>(instr->getType(), global);
-                    generated_aliases.insert(v);
+                    auto* lastSeriesFlow = findLast<ir::SeriesFlow>();
+                    generated_aliases[v] = lastSeriesFlow;
 
                     //this variable is on the heap!
                     auto *assign_instr = M->Nr<ir::AssignInstr>(v, instr);
@@ -167,20 +172,68 @@ bool GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*
         
         for(auto* ret : finder.returns){
             auto* val = ret->getValue();
+            if(auto* flow_instr = ir::cast<ir::FlowInstr>(val)){
+                // get the first instruction cause there should only be one
+                if(auto *series_flow = ir::cast<ir::SeriesFlow>(flow_instr->getFlow())){
+                    val = series_flow->front();
+                }
+            }
             // check for heap allocating call instructions
             if(auto* call_instr = ir::cast<ir::CallInstr>(val)){
                 if(auto* var_val = ir::cast<ir::VarValue>(call_instr->getCallee())){
+                    // check if func allocates
                     if(auto* callee_func = ir::cast<ir::Func>(var_val->getVar())){
                         return checkFunctionAllocates(callee_func, visited);
                     }
                 }
+            //check for heap allocated variables as well
+            }else if(auto* vv = ir::cast<ir::VarValue>(val)){
+                // TODO: handle global variable case
+                // TODO: handle external variable case
+                return checkVarIsOnHeap(bodied_func, vv->getVar(), visited);
             }
-            // TODO: check for heap allocated variables as well
 
         }
     }
     return false;
 }
+
+void VarFinder::handle(ir::AssignInstr* instr){
+    if(util::match(target_var, instr->getLhs())){
+        if(auto *last_series_flow = findLast<ir::SeriesFlow>()){
+            sf_last_assign[last_series_flow] = instr;
+        }
+    }
+}
+
+bool GCFree::checkVarIsOnHeap(ir::BodiedFunc* func, ir::Var* var, std::unordered_set<ir::Func*>& visited){
+    bool ret = true;
+    // loop through function for variable declaration
+    VarFinder finder;
+    finder.target_var = var;
+    func->getBody()->accept(finder);
+    for(auto& [flow, assign_instr] : finder.sf_last_assign){
+        if(auto* call_instr = ir::cast<ir::CallInstr>(assign_instr->getRhs())){
+            if(auto *vv = ir::cast<ir::VarValue>(call_instr->getCallee())){
+                if(auto* init_func = ir::cast<ir::Func>(vv->getVar())){
+                    ret &= checkFunctionAllocates(init_func, visited);
+                }
+            }
+        //handle the case when return variable is assigned to another variable
+        }else if(auto* vv = ir::cast<ir::VarValue>(assign_instr->getRhs())){
+            if(auto* rhs_var = ir::cast<ir::Var>(vv->getVar())){
+                ret &= checkVarIsOnHeap(func, rhs_var, visited);
+            }
+        }else{
+            return false;
+        }
+    }
+    if(finder.sf_last_assign.empty()){
+        return false;
+    }
+    return ret;
+}
+
 void GCFree::run(ir::Module *module){
     
     //determine which functions allocate memory
@@ -191,10 +244,26 @@ void GCFree::run(ir::Module *module){
         }
     }
 
+    std::vector<ir::BodiedFunc*> all_functions;
+
+    // Get standard functions
+    for (auto* func : *module) {
+        if (auto* bodied = ir::cast<ir::BodiedFunc>(func)) {
+            all_functions.push_back(bodied);
+        }
+    }
+
+    // Get the main entry point (the top-level script)
+    if (auto* main_func = ir::cast<ir::BodiedFunc>(module->getMainFunc())) {
+        // Prevent duplicates if main happens to be in the iterator
+        if (std::find(all_functions.begin(), all_functions.end(), main_func) == all_functions.end()) {
+            all_functions.push_back(main_func);
+        }
+    }
+
     // --- PHASE 2: Insert the Free Calls ---
-    for (const auto& [var, value] : allocates_memory) {
-        auto* bodied_func = ir::cast<ir::BodiedFunc>(var);
-        if (!bodied_func) continue;
+    for (auto* bodied_func : all_functions) {
+        // TODO: HANDLE FUNCTIONS THAT are not BODIED FUNC
 
         // TODO: Walk the 'bodied_func' instructions here.
         // generate temporary variables for heap allocated structures
@@ -218,13 +287,40 @@ void GCFree::run(ir::Module *module){
             }
         }
 
-        // insert GC Frees
-        for(ir::Var* var_to_free : generator.generated_aliases){
+        // Logic handling for insertion of GC Frees
+        for(const auto& pair : generator.generated_aliases){
+            ir::Var* var_to_free = pair.first;
+            ir::SeriesFlow* seriesflow = pair.second;
             ir::Func* deconstructor = module->getOrRealizeMethod(var_to_free->getType(), "__del__", {var_to_free->getType()});
+            ir::CallInstr* gc_free_call = nullptr;
+
             if(deconstructor){
-                if(auto *param = ir::cast<ir::Value>(var_to_free)){
-                    ir::CallInstr* gc_free_call = ir::util::call(deconstructor, {param});
+                ir::VarValue* param = module->Nr<ir::VarValue>(var_to_free);                    
+                gc_free_call = ir::util::call(deconstructor, {param});
+            // free pointer
+            }else if(
+                util::match(var_to_free->getType(), module->unsafeGetPointerType(module->getStringType())) 
+            ||  util::match(var_to_free->getType(), module->unsafeGetPointerType(0))
+                
+            ){
+                deconstructor = module->getOrRealizeFunc(
+                    "free", 
+                    {module->getPointerType()},
+                    {},
+                    {"std.internal.gc"}
+                );
+                if(deconstructor){
+                    ir::VarValue* param = module->Nr<ir::VarValue>(var_to_free);                    
+                    gc_free_call = ir::util::call(deconstructor, {param});
                 }
+                
+            }
+
+            // TODO: handle case when return instruction is 
+            // last instruction in the seriesflow
+            // insert GC free
+            if(gc_free_call){
+                seriesflow->push_back(gc_free_call);
             }
         }
     }
