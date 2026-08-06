@@ -33,6 +33,7 @@ struct AliasGenerator : public ir::util::Operator {
 
     ir::BodiedFunc* current_func = nullptr;
     ir::SeriesFlow* current_block = nullptr;
+    
 
     std::unordered_map<ir::SeriesFlow*, std::vector<ir::Var*>> vars_to_free_in_block;
     std::unordered_map<ir::Func*, bool> allocates_memory;
@@ -44,6 +45,7 @@ struct AliasGenerator : public ir::util::Operator {
     void handle(ir::CallInstr *instr) override;
     void nested_instr_handler(ir::CallInstr *instr);
     void handle(ir::ReturnInstr *instr) override;
+    void handle(ir::SeriesFlow *flow) override;
 
 };
 

@@ -70,70 +70,36 @@ void AliasGenerator::handle(ir::ReturnInstr *instr){
 }
 
 void AliasGenerator::handle(ir::CallInstr *instr){
-    if(AliasGenerator::depth() == 1){
-        if(auto *vv = ir::cast<ir::VarValue>(instr->getCallee())){
-            if(auto *func = ir::cast<ir::Func>(vv->getVar())){
-                auto ret = allocates_memory.find(func);
-                if(ret != allocates_memory.end() && allocates_memory[func]){
-                    bool global = current_func == nullptr;
-                    auto *v = M->Nr<ir::Var>(instr->getType(), global);
-                    auto* lastSeriesFlow = findLast<ir::SeriesFlow>();
-                    generated_aliases[v] = lastSeriesFlow;
-
-                    //this variable is on the heap!
-                    auto *assign_instr = M->Nr<ir::AssignInstr>(v, instr);
-                    // instr->replaceAll(var_val);
-                    ir::util::Operator::insertBefore(assign_instr);
-
-
-                    if(!global){
-                        current_func->push_back(v);
-                    }
-                }
-            }
-        }    
-    }else{
+    if(AliasGenerator::depth() > 1){
         nested_instr_handler(instr);
     }
-    ir::util::Operator::handle(instr);
-    /*
-    for(auto it = instr->begin(); it != instr->end(); it++){
-        ir::Value* arg = *it;
-        if(auto* nested_call = ir::cast<ir::CallInstr>(arg)){ 
-            if(auto *vv = ir::cast<ir::VarValue>(nested_call->getCallee())){
+}
+
+void AliasGenerator::handle(ir::SeriesFlow *flow){
+
+    for (auto it = flow->begin(); it != flow->end(); ++it) {
+        if(auto *instr = ir::cast<ir::CallInstr>(*it)){
+            if(auto *vv = ir::cast<ir::VarValue>(instr->getCallee())){
                 if(auto *func = ir::cast<ir::Func>(vv->getVar())){
                     auto ret = allocates_memory.find(func);
                     if(ret != allocates_memory.end() && allocates_memory[func]){
                         bool global = current_func == nullptr;
-                        auto *v = M->Nr<ir::Var>(nested_call->getType(), global);
-                        //handle global
-                        // if(global){
-                        //     static int counter = 1;
-                        //     v->setName(".anon_global" + std::string(counter++));
-                        // }
-                        
-                        //this variable is on the heap!
-                        auto *assign_instr = M->Nr<ir::AssignInstr>(v, nested_call);
-                        ir::util::Operator::insertBefore(assign_instr);
+                        auto *v = M->Nr<ir::Var>(instr->getType(), global);
 
-                        
+                        //this variable is on the heap!
+                        auto *assign_instr = M->Nr<ir::AssignInstr>(v, instr);
+
+                        *it = assign_instr;
 
                         if(!global){
                             current_func->push_back(v);
                         }
-
-                        ir::VarValue *var_val = M->Nr<ir::VarValue>(v);
-                        // replace nested_call instr with variable value
-                        *it = var_val;
+                        generated_aliases[v] = flow;
                     }
                 }
-            }
+            }    
         }
     }
-    */
-    // create temp for current call instruction
-    
-
 }
 
 // instr->getValue() --> gets the arguments
@@ -280,7 +246,8 @@ void GCFree::run(ir::Module *module){
             auto* val = ret_instr->getValue();
             // nested_call function in the ret_instr
             if(auto* call_instr = ir::cast<ir::CallInstr>(val)){
-                // recurse in the call_instr
+                // check if callee allocates
+                // if it doesn't check arguments for heap allocated variables
             }else if(auto* var = ir::cast<ir::Var>(val)){
                 // variables being returned, escaped the local scope
                 generator.generated_aliases.erase(var);
