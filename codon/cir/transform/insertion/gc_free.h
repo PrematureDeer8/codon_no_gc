@@ -3,6 +3,7 @@
 #include "codon/cir/util/visitor.h"
 #include "codon/cir/util/irtools.h"
 #include "codon/cir/util/matching.h"
+#include "codon/cir/type.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -11,6 +12,13 @@ namespace codon{
 namespace ir {
 namespace transform {
 namespace insertion {
+
+enum class Allocates {
+    FALSE,
+    TRUE,
+    UNKNOWN
+};
+
 
 // -----------------------------------------------------------------------------
 // 1. The Helper Visitor: Hunts down every return statement in a function
@@ -36,7 +44,7 @@ struct AliasGenerator : public ir::util::Operator {
     
 
     std::unordered_map<ir::SeriesFlow*, std::vector<ir::Var*>> vars_to_free_in_block;
-    std::unordered_map<ir::Func*, bool> allocates_memory;
+    std::unordered_map<ir::Func*, Allocates> allocates_memory;
     // generated_aliases are candidates for inserting GC frees
     // these variables are deemed to be in a function's local scope (escape analysis)
     std::unordered_map<ir::Var*, ir::SeriesFlow*> generated_aliases;
@@ -57,15 +65,16 @@ struct AliasGenerator : public ir::util::Operator {
 class GCFree : public Pass {
 private:
     // The memoization cache: remembers if a function returns heap memory
-    std::unordered_map<ir::Func*, bool> allocates_memory;
+    std::unordered_map<ir::Func*, Allocates> allocates_memory;
     std::unordered_map<ir::BodiedFunc*, std::vector<ir::ReturnInstr*>> return_statements;
 
     // TODO: Implement your traceback logic here
     bool tracesToSeqAlloc(ir::Value* val);
 
     // Recursive analyzer with cycle prevention
-    bool checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*>& visited);
-    bool checkVarIsOnHeap(ir::BodiedFunc* func, ir::Var* var, std::unordered_set<ir::Func*>& visited);
+    Allocates checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*>& visited);
+    Allocates checkVarIsOnHeap(ir::BodiedFunc* func, ir::Var* var, std::unordered_set<ir::Func*>& visited);
+    bool checkParametersEscape(ir::CallInstr* call_instr);
 
     // insert GC free calls
     // void insertGCFree(ir::Value* val);

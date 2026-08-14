@@ -27,7 +27,7 @@ void AliasGenerator::nested_instr_handler(ir::CallInstr* instr){
             if(auto *vv = ir::cast<ir::VarValue>(nested_call->getCallee())){
                 if(auto *func = ir::cast<ir::Func>(vv->getVar())){
                     auto ret = allocates_memory.find(func);
-                    if(ret != allocates_memory.end() && allocates_memory[func]){
+                    if(ret != allocates_memory.end() && allocates_memory[func] == Allocates::TRUE){
                         bool global = current_func == nullptr;
                         auto *v = M->Nr<ir::Var>(nested_call->getType(), global);
                         // generated_aliases.insert(v);
@@ -82,7 +82,7 @@ void AliasGenerator::handle(ir::SeriesFlow *flow){
             if(auto *vv = ir::cast<ir::VarValue>(instr->getCallee())){
                 if(auto *func = ir::cast<ir::Func>(vv->getVar())){
                     auto ret = allocates_memory.find(func);
-                    if(ret != allocates_memory.end() && allocates_memory[func]){
+                    if(ret != allocates_memory.end() && allocates_memory[func] == Allocates::TRUE){
                         bool global = current_func == nullptr;
                         auto *v = M->Nr<ir::Var>(instr->getType(), global);
 
@@ -107,7 +107,7 @@ bool GCFree::tracesToSeqAlloc(ir::Value* val){
     return false;
 }
 
-bool GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*>& visited) {
+Allocates GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*>& visited) {
     // 1. Check if we already computed this
     if (allocates_memory.find(func) != allocates_memory.end()) {
         return allocates_memory[func];
@@ -115,7 +115,7 @@ bool GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*
 
     // 2. Break infinite loops (e.g., foo() calls bar(), bar() calls foo())
     if (visited.count(func)) {
-        return false; 
+        return Allocates::FALSE; 
     }
     visited.insert(func);
 
@@ -125,9 +125,10 @@ bool GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*
     bool is_allocator = (name == "seq_alloc" || name == "seq_alloc_atomic" || 
                                 name == "seq_alloc_uncollectable" || name == "seq_alloc_atomic_uncollectable");
     if(is_allocator){
-        return true;
+        return Allocates::TRUE;
     }
 
+    Allocates ret;
     // 3. It's a standard function. Find its returns!
     // find the return statements in the bodied function
     if(auto* bodied_func = ir::cast<ir::BodiedFunc>(func)){
@@ -135,12 +136,16 @@ bool GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*
         bodied_func->getBody()->accept(finder);
         return_statements[bodied_func] = finder.returns;
 
-        
-        for(auto* ret : finder.returns){
-            auto* val = ret->getValue();
+        // counter keeps track of current index 
+        int counter = 0;
+        int ret_counter = 0;
+        for(auto* r : finder.returns){
+            auto* val = r->getValue();
             if(auto* flow_instr = ir::cast<ir::FlowInstr>(val)){
                 // get the first instruction cause there should only be one
-                if(auto *series_flow = ir::cast<ir::SeriesFlow>(flow_instr->getFlow())){
+                if(auto* ret_val = flow_instr->getValue()){
+                    val = ret_val;
+                }else if(auto *series_flow = ir::cast<ir::SeriesFlow>(flow_instr->getFlow())){
                     val = series_flow->front();
                 }
             }
@@ -149,19 +154,42 @@ bool GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::Func*
                 if(auto* var_val = ir::cast<ir::VarValue>(call_instr->getCallee())){
                     // check if func allocates
                     if(auto* callee_func = ir::cast<ir::Func>(var_val->getVar())){
-                        return checkFunctionAllocates(callee_func, visited);
+                        counter++;
+                        Allocates ret = checkFunctionAllocates(callee_func, visited);
+                        if(ret == Allocates::UNKNOWN){
+                            return ret;
+                        }
+                        ret_counter += static_cast<int>(ret);
+                        
                     }
                 }
             //check for heap allocated variables as well
             }else if(auto* vv = ir::cast<ir::VarValue>(val)){
+                counter++;
                 // TODO: handle global variable case
                 // TODO: handle external variable case
-                return checkVarIsOnHeap(bodied_func, vv->getVar(), visited);
+                Allocates ret = checkVarIsOnHeap(bodied_func, vv->getVar(), visited);
+                if(ret == Allocates::UNKNOWN){
+                    return ret;
+                }
+                ret_counter += static_cast<int>(ret);
+            }
+            
+            // this means that the function can return
+            // both a stack allocation or heap allocation
+            // depending on the series flow (if statement)
+            if(ret_counter != 0 && ret_counter != counter){
+                return Allocates::UNKNOWN;
             }
 
         }
+        if(ret_counter && counter){
+            if(ret_counter == counter){
+                return Allocates::TRUE;
+            }
+        }
     }
-    return false;
+    return Allocates::FALSE;
 }
 
 void VarFinder::handle(ir::AssignInstr* instr){
@@ -172,32 +200,75 @@ void VarFinder::handle(ir::AssignInstr* instr){
     }
 }
 
-bool GCFree::checkVarIsOnHeap(ir::BodiedFunc* func, ir::Var* var, std::unordered_set<ir::Func*>& visited){
-    bool ret = true;
+Allocates GCFree::checkVarIsOnHeap(ir::BodiedFunc* func, ir::Var* var, std::unordered_set<ir::Func*>& visited){
     // loop through function for variable declaration
     VarFinder finder;
     finder.target_var = var;
     func->getBody()->accept(finder);
+    int counter = 0;
+    int ret_counter = 0;
     for(auto& [flow, assign_instr] : finder.sf_last_assign){
         if(auto* call_instr = ir::cast<ir::CallInstr>(assign_instr->getRhs())){
             if(auto *vv = ir::cast<ir::VarValue>(call_instr->getCallee())){
                 if(auto* init_func = ir::cast<ir::Func>(vv->getVar())){
-                    ret &= checkFunctionAllocates(init_func, visited);
+                    counter++;
+                    Allocates ret = checkFunctionAllocates(init_func, visited);
+                    if(ret == Allocates::UNKNOWN){
+                        return ret;
+                    }
+                    ret_counter += static_cast<int>(ret);
                 }
             }
         //handle the case when return variable is assigned to another variable
         }else if(auto* vv = ir::cast<ir::VarValue>(assign_instr->getRhs())){
             if(auto* rhs_var = ir::cast<ir::Var>(vv->getVar())){
-                ret &= checkVarIsOnHeap(func, rhs_var, visited);
+                counter++;
+                Allocates ret = checkVarIsOnHeap(func, rhs_var, visited);
+                if(ret == Allocates::UNKNOWN){
+                    return ret;
+                }
+                ret_counter += static_cast<int>(ret);
             }
-        }else{
-            return false;
+        }
+
+        // this means that the function can return
+        // both a stack allocation or heap allocation
+        // depending on the series flow (if statement)
+        if(ret_counter && ret_counter != counter){
+            return Allocates::UNKNOWN;
+        }
+
+    }
+    if(ret_counter && counter){
+        if(ret_counter == counter){
+            return Allocates::TRUE;
         }
     }
-    if(finder.sf_last_assign.empty()){
-        return false;
+    return Allocates::FALSE;
+}
+
+bool GCFree::checkParametersEscape(ir::CallInstr* call_instr){
+
+    // heuristic:
+    // if function returns an obj or pointer
+    // then we assume that the parameters escaped
+
+    if(auto* vv = ir::cast<ir::VarValue>(call_instr->getCallee())){
+        if(auto* func = ir::cast<ir::Func>(vv->getVar())){
+            ir::Type* generic_type = func->getType();
+            if(auto* func_type = ir::cast<ir::FuncType>(generic_type)){
+                ir::Type* ret_type = func_type->getReturnType();
+                if(
+                    ir::cast<ir::PointerType>(ret_type)
+                ||  ir::cast<ir::RefType>(ret_type)
+                ){
+                    return true;
+                }
+            }
+        }
     }
-    return ret;
+    return false;
+    
 }
 
 void GCFree::run(ir::Module *module){
@@ -246,8 +317,20 @@ void GCFree::run(ir::Module *module){
             auto* val = ret_instr->getValue();
             // nested_call function in the ret_instr
             if(auto* call_instr = ir::cast<ir::CallInstr>(val)){
-                // check if callee allocates
-                // if it doesn't check arguments for heap allocated variables
+                // check if return type indicates parameters escape call
+                if(checkParametersEscape(call_instr)){
+                    // erase any parameters in generated aliases 
+                    // so that they don't end up being freed
+                    // TODO: make this faster 
+                    for(auto it = call_instr->begin(); it != call_instr->end(); ++it){
+                        if(auto* vv = ir::cast<ir::VarValue>(*it)){
+                            if(auto* var = ir::cast<ir::Var>(vv->getVar())){
+                                generator.generated_aliases.erase(var);
+                            }
+                        }
+                    }
+                }
+                
             }else if(auto* var = ir::cast<ir::Var>(val)){
                 // variables being returned, escaped the local scope
                 generator.generated_aliases.erase(var);
