@@ -113,7 +113,7 @@ Allocates GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::
         return allocates_memory[func];
     }
 
-    // 2. Break infinite loops (e.g., foo() calls bar(), bar() calls foo())
+    // 2. Break nar(), bar() calls foo())
     if (visited.count(func)) {
         return Allocates::FALSE; 
     }
@@ -158,6 +158,31 @@ Allocates GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::
                         Allocates ret = checkFunctionAllocates(callee_func, visited);
                         if(ret == Allocates::UNKNOWN){
                             return ret;
+                        // identify allocation of parameter variables for callee_func
+                        }else if(ret == Allocates::FALSE){
+                            // check if function parameters escape
+                            if(checkParametersEscape(call_instr)){
+                                // check if any parameter are on heap
+                                for(auto it = call_instr->begin(); it != call_instr->end(); ++it){
+                                    if(auto* vv = ir::cast<ir::VarValue>(*it)){
+                                        if(auto* var = ir::cast<ir::Var>(vv->getVar())){
+                                            if(checkVarIsOnHeap(bodied_func, var, visited) == Allocates::TRUE){
+                                                ret = Allocates::TRUE;
+                                                break;
+                                            }
+                                        }
+                                    }else if(auto* nested_call_instr = ir::cast<ir::CallInstr>(*it)){
+                                            if(auto* var_v = ir::cast<ir::VarValue>(nested_call_instr->getCallee())){
+                                                if(auto* callee_func = ir::cast<ir::Func>(var_v->getVar())){
+                                                    if(checkFunctionAllocates(callee_func, visited) == Allocates::TRUE){
+                                                        ret = Allocates::TRUE;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                }
+                            }
                         }
                         ret_counter += static_cast<int>(ret);
                         
@@ -173,6 +198,9 @@ Allocates GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::
                     return ret;
                 }
                 ret_counter += static_cast<int>(ret);
+            }else if(auto* constant = ir::cast<ir::Const>(val)){
+                counter++;
+
             }
             
             // this means that the function can return
@@ -258,9 +286,11 @@ bool GCFree::checkParametersEscape(ir::CallInstr* call_instr){
             ir::Type* generic_type = func->getType();
             if(auto* func_type = ir::cast<ir::FuncType>(generic_type)){
                 ir::Type* ret_type = func_type->getReturnType();
+                // TODO: create recursive call to analyze record type
                 if(
                     ir::cast<ir::PointerType>(ret_type)
                 ||  ir::cast<ir::RefType>(ret_type)
+                ||  ir::cast<ir::RecordType>(ret_type)
                 ){
                     return true;
                 }
