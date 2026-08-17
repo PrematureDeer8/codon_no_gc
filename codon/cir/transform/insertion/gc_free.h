@@ -25,6 +25,8 @@ enum class Allocates {
 // -----------------------------------------------------------------------------
 struct ReturnFinder : public ir::util::Operator {
     std::vector<ir::ReturnInstr*> returns;
+    // for a given return instruction, holds the corresponding seriesflow
+    std::unordered_map<ir::ReturnInstr*, ir::SeriesFlow*> ret_sfs;
 
     void handle(ir::ReturnInstr *instr) override;
 };
@@ -41,10 +43,15 @@ struct AliasGenerator : public ir::util::Operator {
 
     ir::BodiedFunc* current_func = nullptr;
     ir::SeriesFlow* current_block = nullptr;
+    bool is_unknown;
     
 
-    std::unordered_map<ir::SeriesFlow*, std::vector<ir::Var*>> vars_to_free_in_block;
+    std::unordered_set<ir::SeriesFlow*> heap_sf;
     std::unordered_map<ir::Func*, Allocates> allocates_memory;
+    // keys of this dict hold variables that belong to functions
+    // that create variables either on the heap or stack, hence unknown
+    // values hold global variable flags to indicate if heap allocation is made
+    std::unordered_map<ir::BodiedFunc*, std::vector<ir::Var*>> global_vars;
     // generated_aliases are candidates for inserting GC frees
     // these variables are deemed to be in a function's local scope (escape analysis)
     std::unordered_map<ir::Var*, ir::SeriesFlow*> generated_aliases;
@@ -54,6 +61,7 @@ struct AliasGenerator : public ir::util::Operator {
     void nested_instr_handler(ir::CallInstr *instr);
     void handle(ir::ReturnInstr *instr) override;
     void handle(ir::SeriesFlow *flow) override;
+    void global_var_gen(ir::BodiedFunc* bodied_func, std::vector<ir::ReturnInstr*>& heap_returns);
 
 };
 
@@ -67,6 +75,8 @@ private:
     // The memoization cache: remembers if a function returns heap memory
     std::unordered_map<ir::Func*, Allocates> allocates_memory;
     std::unordered_map<ir::BodiedFunc*, std::vector<ir::ReturnInstr*>> return_statements;
+    // set describes the returns that are associated with heap allocations returns
+    std::unordered_set<ir::SeriesFlow*> heap_sf;
 
     // TODO: Implement your traceback logic here
     bool tracesToSeqAlloc(ir::Value* val);

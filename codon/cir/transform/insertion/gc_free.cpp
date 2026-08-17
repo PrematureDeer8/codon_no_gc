@@ -18,6 +18,7 @@ namespace insertion {
 
 void ReturnFinder::handle(ir::ReturnInstr *instr) {
     returns.push_back(instr);
+    ret_sfs[instr] = findLast<ir::SeriesFlow>();
 }
 
 void AliasGenerator::nested_instr_handler(ir::CallInstr* instr){
@@ -27,31 +28,40 @@ void AliasGenerator::nested_instr_handler(ir::CallInstr* instr){
             if(auto *vv = ir::cast<ir::VarValue>(nested_call->getCallee())){
                 if(auto *func = ir::cast<ir::Func>(vv->getVar())){
                     auto ret = allocates_memory.find(func);
-                    if(ret != allocates_memory.end() && allocates_memory[func] == Allocates::TRUE){
-                        bool global = current_func == nullptr;
-                        auto *v = M->Nr<ir::Var>(nested_call->getType(), global);
-                        // generated_aliases.insert(v);
-                        auto* lastSeriesFlow = findLast<ir::SeriesFlow>();
-                        generated_aliases[v] = lastSeriesFlow;
-                        //handle global
-                        // if(global){
-                        //     static int counter = 1;
-                        //     v->setName(".anon_global" + std::string(counter++));
-                        // }
-                        
-                        //this variable is on the heap!
-                        auto *assign_instr = M->Nr<ir::AssignInstr>(v, nested_call);
-                        ir::util::Operator::insertBefore(assign_instr);
+                    if(ret != allocates_memory.end()){
+                        if(allocates_memory[func] == Allocates::TRUE){
 
-                        
+                            bool global = current_func == nullptr;
+                            auto *v = M->Nr<ir::Var>(nested_call->getType(), global);
+                            // generated_aliases.insert(v);
+                            auto* lastSeriesFlow = findLast<ir::SeriesFlow>();
+                            generated_aliases[v] = lastSeriesFlow;
+                            //handle global
+                            // if(global){
+                            //     static int counter = 1;
+                            //     v->setName(".anon_global" + std::string(counter++));
+                            // }
+                            
+                            //this variable is on the heap!
+                            auto *assign_instr = M->Nr<ir::AssignInstr>(v, nested_call);
+                            ir::util::Operator::insertBefore(assign_instr);
 
-                        if(!global){
-                            current_func->push_back(v);
+                            
+
+                            if(!global){
+                                current_func->push_back(v);
+                            }
+
+                            ir::VarValue *var_val = M->Nr<ir::VarValue>(v);
+                            // replace nested_call instr with variable value
+                            *it = var_val;
+                        }else if(allocates_memory[func] == Allocates::UNKNOWN){
+                            if(auto* bodied_func = ir::cast<BodiedFunc>(func)){
+                                for(auto* var : global_vars[bodied_func]){
+                                   generated_aliases[var] = findLast<ir::SeriesFlow>();
+                                }
+                            }
                         }
-
-                        ir::VarValue *var_val = M->Nr<ir::VarValue>(v);
-                        // replace nested_call instr with variable value
-                        *it = var_val;
                     }
                 }
             }
@@ -65,6 +75,16 @@ void AliasGenerator::handle(ir::ReturnInstr *instr){
     if(auto *nested_call = ir::cast<ir::CallInstr>(val)){
         nested_instr_handler(nested_call);
     }
+     // if parent function is unknown then
+    // create global variable flag
+    if(is_unknown && heap_sf.find(findLast<ir::SeriesFlow>()) != heap_sf.end()){
+        auto *global_v = M->Nr<ir::Var>(M->getBoolType(), true, false, true);
+        auto* assign_global = M->Nr<ir::AssignInstr>(global_v, M->Nr<ir::BoolConst>(true, M->getBoolType()));
+        if(current_func){
+            global_vars[current_func].push_back(global_v);
+        }
+        ir::util::Operator::insertBefore(assign_global);
+    }
     ir::util::Operator::handle(instr);
 
 }
@@ -73,6 +93,7 @@ void AliasGenerator::handle(ir::CallInstr *instr){
     if(AliasGenerator::depth() > 1){
         nested_instr_handler(instr);
     }
+    ir::util::Operator::handle(instr);
 }
 
 void AliasGenerator::handle(ir::SeriesFlow *flow){
@@ -82,24 +103,33 @@ void AliasGenerator::handle(ir::SeriesFlow *flow){
             if(auto *vv = ir::cast<ir::VarValue>(instr->getCallee())){
                 if(auto *func = ir::cast<ir::Func>(vv->getVar())){
                     auto ret = allocates_memory.find(func);
-                    if(ret != allocates_memory.end() && allocates_memory[func] == Allocates::TRUE){
-                        bool global = current_func == nullptr;
-                        auto *v = M->Nr<ir::Var>(instr->getType(), global);
+                    if(ret != allocates_memory.end()){
+                        if(allocates_memory[func] == Allocates::TRUE){
+                            bool global = current_func == nullptr;
+                            auto *v = M->Nr<ir::Var>(instr->getType(), global);
 
-                        //this variable is on the heap!
-                        auto *assign_instr = M->Nr<ir::AssignInstr>(v, instr);
+                            //this variable is on the heap!
+                            auto *assign_instr = M->Nr<ir::AssignInstr>(v, instr);
 
-                        *it = assign_instr;
+                            *it = assign_instr;
 
-                        if(!global){
-                            current_func->push_back(v);
+                            if(!global){
+                                current_func->push_back(v);
+                            }
+                            generated_aliases[v] = flow;
+                        }else if(allocates_memory[func] == Allocates::UNKNOWN){
+                            if(auto* bodied_func = ir::cast<BodiedFunc>(func)){
+                                for(auto* var : global_vars[bodied_func]){
+                                   generated_aliases[var] = flow;
+                                }
+                            }
                         }
-                        generated_aliases[v] = flow;
                     }
                 }
             }    
         }
     }
+    ir::util::Operator::handle(flow);
 }
 
 // instr->getValue() --> gets the arguments
@@ -139,6 +169,7 @@ Allocates GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::
         // counter keeps track of current index 
         int counter = 0;
         int ret_counter = 0;
+        bool unknown_ret = false;
         for(auto* r : finder.returns){
             auto* val = r->getValue();
             if(auto* flow_instr = ir::cast<ir::FlowInstr>(val)){
@@ -157,7 +188,7 @@ Allocates GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::
                         counter++;
                         Allocates ret = checkFunctionAllocates(callee_func, visited);
                         if(ret == Allocates::UNKNOWN){
-                            return ret;
+                            unknown_ret = true;
                         // identify allocation of parameter variables for callee_func
                         }else if(ret == Allocates::FALSE){
                             // check if function parameters escape
@@ -184,6 +215,9 @@ Allocates GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::
                                 }
                             }
                         }
+                        if(ret == Allocates::TRUE){
+                            heap_sf.insert(finder.ret_sfs[r]);
+                        }
                         ret_counter += static_cast<int>(ret);
                         
                     }
@@ -194,8 +228,13 @@ Allocates GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::
                 // TODO: handle global variable case
                 // TODO: handle external variable case
                 Allocates ret = checkVarIsOnHeap(bodied_func, vv->getVar(), visited);
+
+                if(ret == Allocates::TRUE){
+                    heap_sf.insert(finder.ret_sfs[r]);
+                }
+
                 if(ret == Allocates::UNKNOWN){
-                    return ret;
+                    unknown_ret = true;
                 }
                 ret_counter += static_cast<int>(ret);
             }else if(auto* constant = ir::cast<ir::Const>(val)){
@@ -207,9 +246,12 @@ Allocates GCFree::checkFunctionAllocates(ir::Func* func, std::unordered_set<ir::
             // both a stack allocation or heap allocation
             // depending on the series flow (if statement)
             if(ret_counter != 0 && ret_counter != counter){
-                return Allocates::UNKNOWN;
+                unknown_ret = true;
             }
 
+        }
+        if(unknown_ret){
+            return Allocates::UNKNOWN;
         }
         if(ret_counter && counter){
             if(ret_counter == counter){
@@ -229,6 +271,7 @@ void VarFinder::handle(ir::AssignInstr* instr){
 }
 
 Allocates GCFree::checkVarIsOnHeap(ir::BodiedFunc* func, ir::Var* var, std::unordered_set<ir::Func*>& visited){
+    // TODO: Build a cache of variables for faster access
     // loop through function for variable declaration
     VarFinder finder;
     finder.target_var = var;
@@ -338,7 +381,13 @@ void GCFree::run(ir::Module *module){
         generator.M = module;
         generator.current_func = bodied_func;
         generator.allocates_memory = allocates_memory; // TODO: Figure out how to pass by reference instead
-
+        generator.heap_sf = heap_sf; // TODO: Figure out how to pass by reference instead
+        auto* func = ir::cast<ir::Func>(bodied_func);
+        if(func && generator.allocates_memory[func] == Allocates::UNKNOWN){
+            generator.is_unknown = true;
+        }else{
+            generator.is_unknown = false;
+        }
         bodied_func->getBody()->accept(generator);
 
 
